@@ -22,29 +22,49 @@ with st.sidebar:
   api_key = st.text_input("Gemini API Key", value=default_key, type="password")
   st.markdown("Get a key from [Google AI Studio](https://aistudio.google.com/).")
 
+# State initialization
 if "processed" not in st.session_state:
   st.session_state.processed = False
+if "cached_pdf_bytes" not in st.session_state:
+  st.session_state.cached_pdf_bytes = None
+if "cached_pdf_name" not in st.session_state:
+  st.session_state.cached_pdf_name = ""
 
 if not st.session_state.processed:
   st.subheader("Step 1: Select Delivery Slip")
 
-  # Direct uploader without st.form so mobile uploads don't drop on rerun
+  # Standard uploader without form
   uploaded_file = st.file_uploader(
-      "Choose a Delivery Slip PDF", type=["pdf"], key="slip_picker"
+      "Choose a Delivery Slip PDF", type=["pdf"], key="file_input"
   )
 
+  # Lock into memory as soon as mobile browser passes the file
   if uploaded_file is not None:
-    st.success(f"Selected: {uploaded_file.name}")
+    st.session_state.cached_pdf_bytes = uploaded_file.getvalue()
+    st.session_state.cached_pdf_name = uploaded_file.name
 
-    if st.button("🚀 Upload & Start Processing", type="primary"):
+  # Display file status if cached in memory
+  if st.session_state.cached_pdf_bytes is not None:
+    st.success(f"Ready: {st.session_state.cached_pdf_name}")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+      start_btn = st.button("🚀 Process Delivery Slip", type="primary")
+    with col2:
+      if st.button("❌ Remove"):
+        st.session_state.cached_pdf_bytes = None
+        st.session_state.cached_pdf_name = ""
+        st.rerun()
+
+    if start_btn:
       if not api_key:
-        st.error("Please provide a Gemini API Key in the sidebar or Secrets.")
+        st.error("Please enter a Gemini API Key in the sidebar or Secrets.")
       else:
         status_box = st.status("🚀 Initializing processing engine...", expanded=True)
         progress_bar = st.progress(5)
 
         try:
-          # Step 1: Read Master Excel
+          # Step 1: Read Master
           status_box.update(label="📂 Loading Product Master...")
           progress_bar.progress(20)
           df_master = pd.read_excel("product_master.xlsx")
@@ -52,17 +72,17 @@ if not st.session_state.processed:
               df_master["UK Item Code"].astype(str).str.replace(" ", "").str.strip()
           )
 
-          # Step 2: Read PDF text
+          # Step 2: Read PDF text from stored bytes
           status_box.update(label="📄 Reading uploaded PDF pages...")
           progress_bar.progress(40)
-          reader = PdfReader(uploaded_file)
+          reader = PdfReader(io.BytesIO(st.session_state.cached_pdf_bytes))
           pdf_text = ""
           for page in reader.pages:
             pdf_text += page.extract_text() or ""
 
           if not pdf_text.strip():
             raise ValueError(
-                "Could not extract readable text from this PDF. Ensure it is a standard digital document."
+                "Could not extract readable text from this PDF. Please ensure it is a digital delivery note."
             )
 
           # Step 3: AI Extraction with multi-model fallback
@@ -250,7 +270,7 @@ else:
   )
 
   if st.session_state.rechecks:
-    st.markdown("### ⚠️️ Items Requiring Recheck")
+    st.markdown("### ⚠️ Items Requiring Recheck")
     for r in st.session_state.rechecks:
       st.warning(f"**{r['item_number']}** ({r['item_name']}): {r['reason']}")
   else:
@@ -259,5 +279,8 @@ else:
   st.markdown("---")
   if st.button("🔄 Process Another Slip (Wipe Session)"):
     for key in list(st.session_state.keys()):
+      del st.session_state[key]
+    st.rerun()
+ey in list(st.session_state.keys()):
       del st.session_state[key]
     st.rerun()
