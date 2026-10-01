@@ -15,7 +15,7 @@ st.set_page_config(
 st.title("📦 Läderach Delivery Slip Processor")
 st.markdown("*Product Master pre-loaded. Data clears completely on refresh.*")
 
-# API Key fallback: checks Streamlit Secrets first, then sidebar input
+# Check Streamlit Secrets first, otherwise check sidebar
 default_key = st.secrets.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
@@ -29,7 +29,6 @@ if "processed" not in st.session_state:
 if not st.session_state.processed:
   st.subheader("Step 1: Select Delivery Slip")
 
-  # Form container prevents automatic actions until user explicitly clicks the button
   with st.form("upload_form", clear_on_submit=False):
     slip_file = st.file_uploader(
         "Choose a Delivery Slip PDF", type=["pdf"], key="slip"
@@ -44,12 +43,11 @@ if not st.session_state.processed:
     elif not api_key:
       st.error("Please provide a Gemini API Key in the sidebar or Secrets.")
     else:
-      # Live Progress tracker with step messages
       status_box = st.status("🚀 Initializing processing engine...", expanded=True)
       progress_bar = st.progress(5)
 
       try:
-        # Step 1: Read Master
+        # Step 1: Read Master Excel
         status_box.update(label="📂 Loading Product Master...")
         progress_bar.progress(20)
         df_master = pd.read_excel("product_master.xlsx")
@@ -66,9 +64,12 @@ if not st.session_state.processed:
           pdf_text += page.extract_text() or ""
 
         if not pdf_text.strip():
-          raise ValueError("Could not extract any readable text from this PDF. Please ensure it is not an unscanned flat photo.")
+          raise ValueError(
+              "Could not extract any readable text from this PDF. Please ensure"
+              " it is a standard digital document."
+          )
 
-        # Step 3: AI Extraction
+        # Step 3: AI Extraction via gemini-3.8-flash
         status_box.update(label="🤖 AI extracting line items, batches & dates...")
         progress_bar.progress(60)
 
@@ -105,7 +106,7 @@ if not st.session_state.processed:
         """
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
             config={"response_mime_type": "application/json"},
         )
