@@ -12,8 +12,8 @@ st.set_page_config(
 
 st.title("📦 Läderach Delivery Slip Processor")
 st.markdown(
-    "*Secure, ephemeral processing. No data is stored; everything clears on"
-    " refresh.*"
+    "*Product Master is pre-loaded. Upload a delivery slip below. All shipping"
+    " data clears on refresh.*"
 )
 
 # Sidebar for Gemini API Key
@@ -30,23 +30,25 @@ if "processed" not in st.session_state:
   st.session_state.processed = False
 
 if not st.session_state.processed:
-  st.subheader("Step 1: Upload Files")
-  master_file = st.file_uploader(
-      "Upload Product Master (CSV)", type=["csv"], key="master"
-  )
+  st.subheader("Step 1: Upload Delivery Slip")
+
+  # Only the delivery slip uploader is here now!
   slip_file = st.file_uploader(
       "Upload Delivery Slip (PDF)", type=["pdf"], key="slip"
   )
 
-  if master_file and slip_file:
+  if slip_file:
     if st.button("Process Delivery Slip", type="primary"):
       if not api_key:
         st.error("Please enter your Gemini API Key in the sidebar.")
       else:
-        with st.spinner("Extracting and processing delivery note securely..."):
+        with st.spinner(
+            "Reading Product Master and processing delivery note securely..."
+        ):
           try:
-            # 1. Read Master CSV
-            df_master = pd.read_csv(master_file)
+            # 1. Automatically load the pre-uploaded Product Master from GitHub repo
+            # (Change filename here if you named it differently in GitHub)
+            df_master = pd.read_csv("product_master.csv")
 
             # 2. Extract text from PDF
             reader = PdfReader(slip_file)
@@ -204,7 +206,10 @@ if not st.session_state.processed:
             st.rerun()
 
           except Exception as e:
-            st.error(f"An error occurred during processing: {e}")
+            st.error(
+                f"An error occurred. Make sure your master file is named"
+                f" 'product_master.csv' in GitHub. Details: {e}"
+            )
 
 else:
   st.subheader("Step 2: Results & Download")
@@ -223,4 +228,4 @@ else:
     for key in list(st.session_state.keys()):
       del st.session_state[key]
     st.rerun()
-    
+      
