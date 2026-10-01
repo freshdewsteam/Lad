@@ -32,7 +32,6 @@ if "processed" not in st.session_state:
 if not st.session_state.processed:
   st.subheader("Step 1: Upload Delivery Slip")
 
-  # Only the delivery slip uploader is here now!
   slip_file = st.file_uploader(
       "Upload Delivery Slip (PDF)", type=["pdf"], key="slip"
   )
@@ -46,9 +45,8 @@ if not st.session_state.processed:
             "Reading Product Master and processing delivery note securely..."
         ):
           try:
-            # 1. Automatically load the pre-uploaded Product Master from GitHub repo
-            # (Change filename here if you named it differently in GitHub)
-            df_master = pd.read_csv("product_master.csv")
+            # 1. Load pre-uploaded Product Master Excel file
+            df_master = pd.read_excel("product_master.xlsx")
 
             # 2. Extract text from PDF
             reader = PdfReader(slip_file)
@@ -207,8 +205,8 @@ if not st.session_state.processed:
 
           except Exception as e:
             st.error(
-                f"An error occurred. Make sure your master file is named"
-                f" 'product_master.csv' in GitHub. Details: {e}"
+                f"An error occurred. Make sure 'product_master.xlsx' is uploaded"
+                f" to your GitHub repo. Details: {e}"
             )
 
 else:
@@ -228,4 +226,3 @@ else:
     for key in list(st.session_state.keys()):
       del st.session_state[key]
     st.rerun()
-      
