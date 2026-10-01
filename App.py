@@ -281,6 +281,6 @@ else:
     for key in list(st.session_state.keys()):
       del st.session_state[key]
     st.rerun()
-ey in list(st.session_state.keys()):
+key in list(st.session_state.keys()):
       del st.session_state[key]
     st.rerun()
