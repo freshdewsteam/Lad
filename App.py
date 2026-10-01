@@ -1,12 +1,11 @@
 import io
 import json
-import os
 import time
 import pandas as pd
 from datetime import datetime, timedelta
 import streamlit as st
 from google import genai
-from pypdf import PdfReader
+from google.genai import types
 
 st.set_page_config(
     page_title="Läderach Logistics Assistant", page_icon="🍫", layout="centered"
@@ -33,7 +32,7 @@ if not st.session_state.processed:
   st.subheader("Step 1: Select Delivery Slip")
 
   uploaded_file = st.file_uploader(
-      "Choose a Delivery Slip PDF", type=["pdf"], key="file_input"
+      "Choose a Delivery Slip PDF", type=["pdf"], key="slip_picker"
   )
 
   if uploaded_file is not None:
@@ -53,81 +52,84 @@ if not st.session_state.processed:
         st.rerun()
 
     if start_btn:
-      status_box = st.status("🚀 Initializing processing engine...", expanded=True)
-      progress_bar = st.progress(5)
+      status_box = st.status("🚀 Processing Läderach Delivery Slip...", expanded=True)
+      progress_bar = st.progress(10)
 
       try:
-        # Step 1: Read Master
+        # Step 1: Read Master Excel
         status_box.update(label="📂 Loading Product Master...")
-        progress_bar.progress(20)
+        progress_bar.progress(25)
         df_master = pd.read_excel("product_master.xlsx")
         df_master["UK Item Code Clean"] = (
             df_master["UK Item Code"].astype(str).str.replace(" ", "").str.strip()
         )
 
-        # Step 2: Read PDF text
-        status_box.update(label="📄 Reading uploaded PDF pages...")
-        progress_bar.progress(40)
-        reader = PdfReader(io.BytesIO(st.session_state.cached_pdf_bytes))
-        pdf_text = ""
-        for page in reader.pages:
-          pdf_text += page.extract_text() or ""
-
-        if not pdf_text.strip():
-          raise ValueError(
-              "Could not extract readable text from this PDF. Please ensure it is a digital delivery note."
-          )
-
-        # Step 3: AI Extraction using the explicitly supported model endpoint
-        status_box.update(label="🤖 AI extracting line items, batches & dates...")
-        progress_bar.progress(60)
+        # Step 2: Native Multimodal Document Inspection via Gemini
+        status_box.update(label="🤖 AI analyzing multi-line delivery layout & batches...")
+        progress_bar.progress(50)
 
         client = genai.Client(api_key=api_key)
-        prompt = f"""
-        You are a specialist logistics data assistant for Läderach (UK) Limited.
-        Extract all delivery line items from the delivery slip text below.
 
-        CRITICAL RULES:
-        1. Exclude any items listed under "Open Items" (not delivered) entirely.
-        2. Ignore skipped position numbers at page breaks.
-        3. MULTI-BATCH ITEMS: If a position has more than one batch number or best before date, extract each batch as its own separate line item with its own quantity.
-        4. If batch or best before is illegible, record "UNCLEAR — RECHECK".
-        5. Extract Delivery Note Number and Document Date from header.
+        prompt = """
+        You are an expert logistics document parser for Läderach (UK) Limited.
+        Examine this multi-page delivery slip PDF carefully.
 
-        Return JSON matching this schema:
-        {{
+        STRUCTURE DETAILS:
+        - Each row contains Pos., Item number (e.g. 1009 7582 or 1010 5698), Description, Quantity, Unit (box, Tray, pcs, etc.), Batch number (typically starts with CH...), and Best Before date (DD.MM.YYYY).
+        - Multi-Batch Rows: If an item position has multiple batch numbers or different expiry dates, output EACH batch as a distinct line item with its corresponding quantity.
+        - Exclude any sections labeled "Open Items" or items not yet delivered.
+        - Extract the Delivery note no. (e.g., 130-LS26007342) and Document Date from the header.
+
+        Output ONLY valid JSON matching this exact structure:
+        {
           "delivery_note_number": "...",
           "document_date": "...",
           "line_items": [
-            {{
-              "item_number": "10105698",
-              "item_name": "...",
-              "quantity": 12,
-              "unit": "PC",
-              "batch": "...",
-              "best_before": "DD.MM.YYYY"
-            }}
+            {
+              "item_number": "1009 7582",
+              "item_name": "Frisch Schoggi Sticks AU Selection mini 90g",
+              "quantity": 3,
+              "unit": "box",
+              "batch": "CH26196275",
+              "best_before": "09.10.2026"
+            }
           ]
-        }}
-
-        Delivery Slip Text:
-        {pdf_text}
+        }
         """
 
-        response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
+        # Using direct PDF bytes with active free-tier models
+        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+        response = None
+        last_error = None
+
+        for m in models_to_try:
+          try:
+            response = client.models.generate_content(
+                model=m,
+                contents=[
+                    types.Part.from_bytes(
+                        data=st.session_state.cached_pdf_bytes,
+                        mime_type="application/pdf",
+                    ),
+                    prompt,
+                ],
+                config={"response_mime_type": "application/json"},
+            )
+            if response and response.text:
+              break
+          except Exception as err:
+            last_error = err
+            time.sleep(2)
+            continue
+
+        if not response or not response.text:
+          raise RuntimeError(f"Model processing error: {last_error}")
 
         data = json.loads(response.text)
 
-        # Step 4: Removal Date Calculations
-        status_box.update(label="⚙️ Cross-referencing master & calculating removal dates...")
-        progress_bar.progress(80)
-
-        processed_rows = []
-        recheck_reasons = []
+        # Step 3: Match against Master & Apply Removal Rules
+        status_box.update(label="⚙️ Applying removal date rules (-0, -5, -7 days)...")
+        progress_bar.progress(75)
 
         same_date_families = {
             "FrischSchoggi Open Sales",
@@ -141,6 +143,9 @@ if not st.session_state.processed:
             "Mini Pralines", "Popcorn", "Pralines & Truffes Pre-Packed",
             "Snacking", "Souvenir", "Tablets", "Tartufi",
         }
+
+        processed_rows = []
+        recheck_reasons = []
 
         for item in data.get("line_items", []):
           raw_num = str(item.get("item_number", "")).strip()
@@ -177,7 +182,7 @@ if not st.session_state.processed:
               elif family in minus_7_families:
                 removal_date_str = (bb_date - timedelta(days=7)).strftime("%d.%m.%Y")
             except ValueError:
-              reason = f"Best Before format '{bb_str}' is invalid (expected DD.MM.YYYY)"
+              reason = f"Best Before date format '{bb_str}' is invalid (expected DD.MM.YYYY)"
 
           if removal_date_str == "Recheck" and reason:
             recheck_reasons.append({
@@ -198,6 +203,7 @@ if not st.session_state.processed:
 
         df_out = pd.DataFrame(processed_rows)
 
+        # Sort ascending by Removal Date; Rechecks to the bottom
         if not df_out.empty:
           def sort_key(val):
             if val == "Recheck":
@@ -210,8 +216,8 @@ if not st.session_state.processed:
           df_out["_sort"] = df_out["Removal Date"].apply(sort_key)
           df_out = df_out.sort_values(by="_sort", kind="mergesort").drop(columns=["_sort"])
 
-        # Step 5: Generate Excel
-        status_box.update(label="📊 Assembling final Excel spreadsheet...")
+        # Step 4: Export to Excel buffer
+        status_box.update(label="📊 Generating clean Excel sheet...")
         progress_bar.progress(95)
 
         output = io.BytesIO()
@@ -220,7 +226,7 @@ if not st.session_state.processed:
         excel_data = output.getvalue()
 
         progress_bar.progress(100)
-        status_box.update(label="✅ Complete!", state="complete", expanded=False)
+        status_box.update(label="✅ Delivery Slip Successfully Processed!", state="complete", expanded=False)
 
         st.session_state.processed = True
         st.session_state.excel_data = excel_data
@@ -231,7 +237,7 @@ if not st.session_state.processed:
         st.rerun()
 
       except Exception as e:
-        status_box.update(label="❌ Error during processing", state="error")
+        status_box.update(label="❌ Error processing document", state="error")
         st.error(f"Details: {e}")
 
 else:
