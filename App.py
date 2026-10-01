@@ -15,7 +15,6 @@ st.set_page_config(
 st.title("📦 Läderach Delivery Slip Processor")
 st.markdown("*Product Master pre-loaded. Data clears completely on refresh.*")
 
-# Check Streamlit Secrets first, otherwise check sidebar
 default_key = st.secrets.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
@@ -29,218 +28,213 @@ if "processed" not in st.session_state:
 if not st.session_state.processed:
   st.subheader("Step 1: Select Delivery Slip")
 
-  with st.form("upload_form", clear_on_submit=False):
-    slip_file = st.file_uploader(
-        "Choose a Delivery Slip PDF", type=["pdf"], key="slip"
-    )
-    submit_button = st.form_submit_button(
-        "📤 Upload & Start Processing", type="primary"
-    )
+  # Direct uploader without st.form so mobile uploads don't drop on rerun
+  uploaded_file = st.file_uploader(
+      "Choose a Delivery Slip PDF", type=["pdf"], key="slip_picker"
+  )
 
-  if submit_button:
-    if not slip_file:
-      st.warning("Please choose a PDF file first before clicking upload.")
-    elif not api_key:
-      st.error("Please provide a Gemini API Key in the sidebar or Secrets.")
-    else:
-      status_box = st.status("🚀 Initializing processing engine...", expanded=True)
-      progress_bar = st.progress(5)
+  if uploaded_file is not None:
+    st.success(f"Selected: {uploaded_file.name}")
 
-      try:
-        # Step 1: Read Master Excel
-        status_box.update(label="📂 Loading Product Master...")
-        progress_bar.progress(20)
-        df_master = pd.read_excel("product_master.xlsx")
-        df_master["UK Item Code Clean"] = (
-            df_master["UK Item Code"].astype(str).str.replace(" ", "").str.strip()
-        )
+    if st.button("🚀 Upload & Start Processing", type="primary"):
+      if not api_key:
+        st.error("Please provide a Gemini API Key in the sidebar or Secrets.")
+      else:
+        status_box = st.status("🚀 Initializing processing engine...", expanded=True)
+        progress_bar = st.progress(5)
 
-        # Step 2: Read PDF text
-        status_box.update(label="📄 Reading uploaded PDF pages...")
-        progress_bar.progress(40)
-        reader = PdfReader(slip_file)
-        pdf_text = ""
-        for page in reader.pages:
-          pdf_text += page.extract_text() or ""
-
-        if not pdf_text.strip():
-          raise ValueError(
-              "Could not extract any readable text from this PDF. Please ensure"
-              " it is a standard digital document."
+        try:
+          # Step 1: Read Master Excel
+          status_box.update(label="📂 Loading Product Master...")
+          progress_bar.progress(20)
+          df_master = pd.read_excel("product_master.xlsx")
+          df_master["UK Item Code Clean"] = (
+              df_master["UK Item Code"].astype(str).str.replace(" ", "").str.strip()
           )
 
-        # Step 3: AI Extraction with automatic fallback
-        status_box.update(label="🤖 AI extracting line items, batches & dates...")
-        progress_bar.progress(60)
+          # Step 2: Read PDF text
+          status_box.update(label="📄 Reading uploaded PDF pages...")
+          progress_bar.progress(40)
+          reader = PdfReader(uploaded_file)
+          pdf_text = ""
+          for page in reader.pages:
+            pdf_text += page.extract_text() or ""
 
-        client = genai.Client(api_key=api_key)
-        prompt = f"""
-        You are a specialist logistics data assistant for Läderach (UK) Limited.
-        Extract all delivery line items from the delivery slip text below.
-
-        CRITICAL RULES:
-        1. Exclude any items listed under "Open Items" (not delivered) entirely.
-        2. Ignore skipped position numbers at page breaks.
-        3. MULTI-BATCH ITEMS: If a position has more than one batch number or best before date, extract each batch as its own separate line item with its own quantity.
-        4. If batch or best before is illegible, record "UNCLEAR — RECHECK".
-        5. Extract Delivery Note Number and Document Date from header.
-
-        Return JSON matching this schema:
-        {{
-          "delivery_note_number": "...",
-          "document_date": "...",
-          "line_items": [
-            {{
-              "item_number": "10105698",
-              "item_name": "...",
-              "quantity": 12,
-              "unit": "PC",
-              "batch": "...",
-              "best_before": "DD.MM.YYYY"
-            }}
-          ]
-        }}
-
-        Delivery Slip Text:
-        {pdf_text}
-        """
-
-        # Resilient model caller: tries primary model, falls back to standard model if busy
-        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.5-pro"]
-        response = None
-        last_error = None
-
-        for model_name in models_to_try:
-          try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config={"response_mime_type": "application/json"},
+          if not pdf_text.strip():
+            raise ValueError(
+                "Could not extract readable text from this PDF. Ensure it is a standard digital document."
             )
-            if response:
-              break
-          except Exception as err:
-            last_error = err
-            time.sleep(1)
-            continue
 
-        if not response:
-          raise RuntimeError(f"All AI models were temporarily busy. Details: {last_error}")
+          # Step 3: AI Extraction with multi-model fallback
+          status_box.update(label="🤖 AI extracting line items, batches & dates...")
+          progress_bar.progress(60)
 
-        data = json.loads(response.text)
+          client = genai.Client(api_key=api_key)
+          prompt = f"""
+          You are a specialist logistics data assistant for Läderach (UK) Limited.
+          Extract all delivery line items from the delivery slip text below.
 
-        # Step 4: Removal Date Calculations
-        status_box.update(label="⚙️️ Cross-referencing master & calculating removal dates...")
-        progress_bar.progress(80)
+          CRITICAL RULES:
+          1. Exclude any items listed under "Open Items" (not delivered) entirely.
+          2. Ignore skipped position numbers at page breaks.
+          3. MULTI-BATCH ITEMS: If a position has more than one batch number or best before date, extract each batch as its own separate line item with its own quantity.
+          4. If batch or best before is illegible, record "UNCLEAR — RECHECK".
+          5. Extract Delivery Note Number and Document Date from header.
 
-        processed_rows = []
-        recheck_reasons = []
+          Return JSON matching this schema:
+          {{
+            "delivery_note_number": "...",
+            "document_date": "...",
+            "line_items": [
+              {{
+                "item_number": "10105698",
+                "item_name": "...",
+                "quantity": 12,
+                "unit": "PC",
+                "batch": "...",
+                "best_before": "DD.MM.YYYY"
+              }}
+            ]
+          }}
 
-        same_date_families = {
-            "FrischSchoggi Open Sales",
-            "Pralines & Truffes Open Sales",
-            "MiniMousses",
-            "FrischSchoggi Minis",
-        }
-        minus_5_families = {"FrischSchoggi Pre-packed"}
-        minus_7_families = {
-            "Branchli", "Carrés", "Figures", "Foiled Hearts",
-            "Mini Pralines", "Popcorn", "Pralines & Truffes Pre-Packed",
-            "Snacking", "Souvenir", "Tablets", "Tartufi",
-        }
+          Delivery Slip Text:
+          {pdf_text}
+          """
 
-        for item in data.get("line_items", []):
-          raw_num = str(item.get("item_number", "")).strip()
-          clean_num = raw_num.replace(" ", "")
-          norm_num = clean_num[:4] + " " + clean_num[4:] if len(clean_num) >= 4 else clean_num
+          models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.5-pro"]
+          response = None
+          last_error = None
 
-          match = df_master[df_master["UK Item Code Clean"] == clean_num]
-          item_in_master = not match.empty
-
-          if item_in_master:
-            item_name = match.iloc[0].get("Product Name", item.get("item_name"))
-            family = str(match.iloc[0].get("Family", "")).strip()
-          else:
-            item_name = item.get("item_name")
-            family = None
-
-          bb_str = str(item.get("best_before", "")).strip()
-          removal_date_str = "Recheck"
-          reason = None
-
-          if not item_in_master:
-            reason = "Item number not found in Product Master"
-          elif bb_str == "UNCLEAR — RECHECK" or not bb_str:
-            reason = "Best Before date is illegible or missing"
-          elif family not in same_date_families and family not in minus_5_families and family not in minus_7_families:
-            reason = f"Family '{family}' not in standard removal date calculation rules"
-          else:
+          for model_name in models_to_try:
             try:
-              bb_date = datetime.strptime(bb_str, "%d.%m.%Y")
-              if family in same_date_families:
-                removal_date_str = bb_date.strftime("%d.%m.%Y")
-              elif family in minus_5_families:
-                removal_date_str = (bb_date - timedelta(days=5)).strftime("%d.%m.%Y")
-              elif family in minus_7_families:
-                removal_date_str = (bb_date - timedelta(days=7)).strftime("%d.%m.%Y")
-            except ValueError:
-              reason = f"Best Before format '{bb_str}' is invalid (expected DD.MM.YYYY)"
+              response = client.models.generate_content(
+                  model=model_name,
+                  contents=prompt,
+                  config={"response_mime_type": "application/json"},
+              )
+              if response:
+                break
+            except Exception as err:
+              last_error = err
+              time.sleep(1)
+              continue
 
-          if removal_date_str == "Recheck" and reason:
-            recheck_reasons.append({
-                "item_number": norm_num,
-                "item_name": item_name,
-                "reason": reason,
+          if not response:
+            raise RuntimeError(f"All AI models were temporarily busy. Details: {last_error}")
+
+          data = json.loads(response.text)
+
+          # Step 4: Removal Date Calculations
+          status_box.update(label="⚙️ Cross-referencing master & calculating removal dates...")
+          progress_bar.progress(80)
+
+          processed_rows = []
+          recheck_reasons = []
+
+          same_date_families = {
+              "FrischSchoggi Open Sales",
+              "Pralines & Truffes Open Sales",
+              "MiniMousses",
+              "FrischSchoggi Minis",
+          }
+          minus_5_families = {"FrischSchoggi Pre-packed"}
+          minus_7_families = {
+              "Branchli", "Carrés", "Figures", "Foiled Hearts",
+              "Mini Pralines", "Popcorn", "Pralines & Truffes Pre-Packed",
+              "Snacking", "Souvenir", "Tablets", "Tartufi",
+          }
+
+          for item in data.get("line_items", []):
+            raw_num = str(item.get("item_number", "")).strip()
+            clean_num = raw_num.replace(" ", "")
+            norm_num = clean_num[:4] + " " + clean_num[4:] if len(clean_num) >= 4 else clean_num
+
+            match = df_master[df_master["UK Item Code Clean"] == clean_num]
+            item_in_master = not match.empty
+
+            if item_in_master:
+              item_name = match.iloc[0].get("Product Name", item.get("item_name"))
+              family = str(match.iloc[0].get("Family", "")).strip()
+            else:
+              item_name = item.get("item_name")
+              family = None
+
+            bb_str = str(item.get("best_before", "")).strip()
+            removal_date_str = "Recheck"
+            reason = None
+
+            if not item_in_master:
+              reason = "Item number not found in Product Master"
+            elif bb_str == "UNCLEAR — RECHECK" or not bb_str:
+              reason = "Best Before date is illegible or missing"
+            elif family not in same_date_families and family not in minus_5_families and family not in minus_7_families:
+              reason = f"Family '{family}' not in standard removal date calculation rules"
+            else:
+              try:
+                bb_date = datetime.strptime(bb_str, "%d.%m.%Y")
+                if family in same_date_families:
+                  removal_date_str = bb_date.strftime("%d.%m.%Y")
+                elif family in minus_5_families:
+                  removal_date_str = (bb_date - timedelta(days=5)).strftime("%d.%m.%Y")
+                elif family in minus_7_families:
+                  removal_date_str = (bb_date - timedelta(days=7)).strftime("%d.%m.%Y")
+              except ValueError:
+                reason = f"Best Before format '{bb_str}' is invalid (expected DD.MM.YYYY)"
+
+            if removal_date_str == "Recheck" and reason:
+              recheck_reasons.append({
+                  "item_number": norm_num,
+                  "item_name": item_name,
+                  "reason": reason,
+              })
+
+            processed_rows.append({
+                "Item Number": norm_num,
+                "Item Name": item_name,
+                "Quantity": item.get("quantity"),
+                "Unit": item.get("unit"),
+                "Batch": item.get("batch"),
+                "Best Before": bb_str,
+                "Removal Date": removal_date_str,
             })
 
-          processed_rows.append({
-              "Item Number": norm_num,
-              "Item Name": item_name,
-              "Quantity": item.get("quantity"),
-              "Unit": item.get("unit"),
-              "Batch": item.get("batch"),
-              "Best Before": bb_str,
-              "Removal Date": removal_date_str,
-          })
+          df_out = pd.DataFrame(processed_rows)
 
-        df_out = pd.DataFrame(processed_rows)
+          if not df_out.empty:
+            def sort_key(val):
+              if val == "Recheck":
+                return datetime(9999, 12, 31)
+              try:
+                return datetime.strptime(val, "%d.%m.%Y")
+              except:
+                return datetime(9999, 12, 31)
 
-        if not df_out.empty:
-          def sort_key(val):
-            if val == "Recheck":
-              return datetime(9999, 12, 31)
-            try:
-              return datetime.strptime(val, "%d.%m.%Y")
-            except:
-              return datetime(9999, 12, 31)
+            df_out["_sort"] = df_out["Removal Date"].apply(sort_key)
+            df_out = df_out.sort_values(by="_sort", kind="mergesort").drop(columns=["_sort"])
 
-          df_out["_sort"] = df_out["Removal Date"].apply(sort_key)
-          df_out = df_out.sort_values(by="_sort", kind="mergesort").drop(columns=["_sort"])
+          # Step 5: Generate Excel
+          status_box.update(label="📊 Assembling final Excel spreadsheet...")
+          progress_bar.progress(95)
 
-        # Step 5: Generate Excel
-        status_box.update(label="📊 Assembling final Excel spreadsheet...")
-        progress_bar.progress(95)
+          output = io.BytesIO()
+          with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_out.to_excel(writer, index=False, sheet_name="Delivery")
+          excel_data = output.getvalue()
 
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-          df_out.to_excel(writer, index=False, sheet_name="Delivery")
-        excel_data = output.getvalue()
+          progress_bar.progress(100)
+          status_box.update(label="✅ Complete!", state="complete", expanded=False)
 
-        progress_bar.progress(100)
-        status_box.update(label="✅ Complete!", state="complete", expanded=False)
+          st.session_state.processed = True
+          st.session_state.excel_data = excel_data
+          st.session_state.note_num = data.get("delivery_note_number", "Unknown")
+          st.session_state.doc_date = data.get("document_date", "Unknown")
+          st.session_state.total_items = len(df_out)
+          st.session_state.rechecks = recheck_reasons
+          st.rerun()
 
-        # Store session state
-        st.session_state.processed = True
-        st.session_state.excel_data = excel_data
-        st.session_state.note_num = data.get("delivery_note_number", "Unknown")
-        st.session_state.doc_date = data.get("document_date", "Unknown")
-        st.session_state.total_items = len(df_out)
-        st.session_state.rechecks = recheck_reasons
-        st.rerun()
-
-      except Exception as e:
-        status_box.update(label="❌ Error during processing", state="error")
-        st.error(f"Details: {e}")
+        except Exception as e:
+          status_box.update(label="❌ Error during processing", state="error")
+          st.error(f"Details: {e}")
 
 else:
   st.subheader("Step 2: Processing Summary & Download")
@@ -256,7 +250,7 @@ else:
   )
 
   if st.session_state.rechecks:
-    st.markdown("### ⚠️ Items Requiring Recheck")
+    st.markdown("### ⚠️️ Items Requiring Recheck")
     for r in st.session_state.rechecks:
       st.warning(f"**{r['item_number']}** ({r['item_name']}): {r['reason']}")
   else:
