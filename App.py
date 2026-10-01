@@ -277,10 +277,8 @@ else:
     st.success("All items calculated successfully with zero rechecks!")
 
   st.markdown("---")
-  if st.button("🔄 Process Another Slip (Wipe Session)"):
+    if st.button("🔄 Process Another Slip (Wipe Session)"):
     for key in list(st.session_state.keys()):
       del st.session_state[key]
     st.rerun()
-key in list(st.session_state.keys()):
-      del st.session_state[key]
-    st.rerun()
+
