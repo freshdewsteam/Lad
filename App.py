@@ -15,7 +15,7 @@ st.set_page_config(
 st.title("📦 Läderach Delivery Slip Processor")
 st.markdown("*Product Master pre-loaded. Data clears completely on refresh.*")
 
-# Retrieve API key securely from Streamlit Secrets (no public input shown)
+# Silent authentication via Streamlit Secrets
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 
 if not api_key:
@@ -57,7 +57,7 @@ if not st.session_state.processed:
       progress_bar = st.progress(5)
 
       try:
-        # Step 1: Read Master Excel
+        # Step 1: Read Master
         status_box.update(label="📂 Loading Product Master...")
         progress_bar.progress(20)
         df_master = pd.read_excel("product_master.xlsx")
@@ -78,7 +78,7 @@ if not st.session_state.processed:
               "Could not extract readable text from this PDF. Please ensure it is a digital delivery note."
           )
 
-        # Step 3: AI Extraction with current supported models
+        # Step 3: AI Extraction using the explicitly supported model endpoint
         status_box.update(label="🤖 AI extracting line items, batches & dates...")
         progress_bar.progress(60)
 
@@ -114,27 +114,11 @@ if not st.session_state.processed:
         {pdf_text}
         """
 
-        # Using officially active models without deprecated endpoints
-        models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
-        response = None
-        last_error = None
-
-        for model_name in models_to_try:
-          try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config={"response_mime_type": "application/json"},
-            )
-            if response:
-              break
-          except Exception as err:
-            last_error = err
-            time.sleep(1)
-            continue
-
-        if not response:
-          raise RuntimeError(f"Extraction failed. Details: {last_error}")
+        response = client.models.generate_content(
+            model="gemini-3.1-pro-preview",
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
 
         data = json.loads(response.text)
 
