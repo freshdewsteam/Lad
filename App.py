@@ -14,7 +14,6 @@ st.set_page_config(
 st.title("📦 Läderach Delivery Slip Processor")
 st.markdown("*Product Master pre-loaded. Data clears completely on refresh.*")
 
-# Silent authentication via Streamlit Secrets
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 
 if not api_key:
@@ -56,7 +55,7 @@ if not st.session_state.processed:
       progress_bar = st.progress(10)
 
       try:
-        # Step 1: Read Master Excel
+        # Step 1: Read Master
         status_box.update(label="📂 Loading Product Master...")
         progress_bar.progress(25)
         df_master = pd.read_excel("product_master.xlsx")
@@ -64,11 +63,26 @@ if not st.session_state.processed:
             df_master["UK Item Code"].astype(str).str.replace(" ", "").str.strip()
         )
 
-        # Step 2: Native Multimodal Document Inspection via Gemini
-        status_box.update(label="🤖 AI analyzing multi-line delivery layout & batches...")
-        progress_bar.progress(50)
-
+        # Step 2: Auto-detect active available models directly from your key
+        status_box.update(label="🔍 Discovering active account models...")
+        progress_bar.progress(40)
         client = genai.Client(api_key=api_key)
+
+        available_models = []
+        try:
+          for m in client.models.list():
+            name = m.name.replace("models/", "")
+            # Prioritize flash models with generateContent support
+            if "flash" in name.lower() and "preview" not in name.lower():
+              available_models.append(name)
+        except Exception:
+          pass
+
+        # Robust priority fallback list
+        target_models = available_models + ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
+        # Deduplicate while preserving priority
+        seen = set()
+        models_to_run = [x for x in target_models if not (x in seen or seen.add(x))]
 
         prompt = """
         You are an expert logistics document parser for Läderach (UK) Limited.
@@ -97,15 +111,16 @@ if not st.session_state.processed:
         }
         """
 
-        # Using direct PDF bytes with active free-tier models
-        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+        status_box.update(label="🤖 AI extracting line items, batches & dates...")
+        progress_bar.progress(60)
+
         response = None
         last_error = None
 
-        for m in models_to_try:
+        for candidate in models_to_run:
           try:
             response = client.models.generate_content(
-                model=m,
+                model=candidate,
                 contents=[
                     types.Part.from_bytes(
                         data=st.session_state.cached_pdf_bytes,
@@ -119,17 +134,24 @@ if not st.session_state.processed:
               break
           except Exception as err:
             last_error = err
-            time.sleep(2)
+            time.sleep(1)
             continue
 
         if not response or not response.text:
-          raise RuntimeError(f"Model processing error: {last_error}")
+          raise RuntimeError(f"Could not reach an active model. Error: {last_error}")
 
-        data = json.loads(response.text)
+        # Clean JSON payload in case markdown fences are returned
+        raw_resp = response.text.strip()
+        if raw_resp.startswith("```"):
+          raw_resp = raw_resp.strip("`")
+          if raw_resp.startswith("json"):
+            raw_resp = raw_resp[4:].strip()
+
+        data = json.loads(raw_resp)
 
         # Step 3: Match against Master & Apply Removal Rules
         status_box.update(label="⚙️ Applying removal date rules (-0, -5, -7 days)...")
-        progress_bar.progress(75)
+        progress_bar.progress(80)
 
         same_date_families = {
             "FrischSchoggi Open Sales",
@@ -203,7 +225,6 @@ if not st.session_state.processed:
 
         df_out = pd.DataFrame(processed_rows)
 
-        # Sort ascending by Removal Date; Rechecks to the bottom
         if not df_out.empty:
           def sort_key(val):
             if val == "Recheck":
