@@ -69,7 +69,7 @@ if not st.session_state.processed:
               " it is a standard digital document."
           )
 
-        # Step 3: AI Extraction via gemini-3.8-flash
+        # Step 3: AI Extraction with automatic fallback
         status_box.update(label="🤖 AI extracting line items, batches & dates...")
         progress_bar.progress(60)
 
@@ -105,16 +105,32 @@ if not st.session_state.processed:
         {pdf_text}
         """
 
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
+        # Resilient model caller: tries primary model, falls back to standard model if busy
+        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.5-pro"]
+        response = None
+        last_error = None
+
+        for model_name in models_to_try:
+          try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config={"response_mime_type": "application/json"},
+            )
+            if response:
+              break
+          except Exception as err:
+            last_error = err
+            time.sleep(1)
+            continue
+
+        if not response:
+          raise RuntimeError(f"All AI models were temporarily busy. Details: {last_error}")
 
         data = json.loads(response.text)
 
         # Step 4: Removal Date Calculations
-        status_box.update(label="⚙️ Cross-referencing master & calculating removal dates...")
+        status_box.update(label="⚙️️ Cross-referencing master & calculating removal dates...")
         progress_bar.progress(80)
 
         processed_rows = []
