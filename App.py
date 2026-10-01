@@ -8,11 +8,15 @@ from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Läderach Logistics Assistant", page_icon="🍫", layout="centered"
+    page_title="Delivery Report Parser", page_icon="🍫", layout="centered"
 )
 
-st.title("📦 Läderach Delivery Slip Processor")
-st.markdown("*Product Master pre-loaded. Data clears completely on refresh.*")
+# Custom Title & Subtitle
+st.title("📦 Delivery Report Parser")
+st.markdown(
+    "Just upload your Food delivery file and you will get a file with product removal date. "
+    "Every Data clears completely after each session."
+)
 
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 
@@ -63,7 +67,7 @@ if not st.session_state.processed:
             df_master["UK Item Code"].astype(str).str.replace(" ", "").str.strip()
         )
 
-        # Step 2: Auto-detect active available models directly from your key
+        # Step 2: Auto-detect active available models
         status_box.update(label="🔍 Discovering active account models...")
         progress_bar.progress(40)
         client = genai.Client(api_key=api_key)
@@ -72,15 +76,12 @@ if not st.session_state.processed:
         try:
           for m in client.models.list():
             name = m.name.replace("models/", "")
-            # Prioritize flash models with generateContent support
             if "flash" in name.lower() and "preview" not in name.lower():
               available_models.append(name)
         except Exception:
           pass
 
-        # Robust priority fallback list
         target_models = available_models + ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
-        # Deduplicate while preserving priority
         seen = set()
         models_to_run = [x for x in target_models if not (x in seen or seen.add(x))]
 
@@ -140,7 +141,6 @@ if not st.session_state.processed:
         if not response or not response.text:
           raise RuntimeError(f"Could not reach an active model. Error: {last_error}")
 
-        # Clean JSON payload in case markdown fences are returned
         raw_resp = response.text.strip()
         if raw_resp.startswith("```"):
           raw_resp = raw_resp.strip("`")
@@ -153,17 +153,18 @@ if not st.session_state.processed:
         status_box.update(label="⚙️ Applying removal date rules (-0, -5, -7 days)...")
         progress_bar.progress(80)
 
+        # Normalized to lowercase sets to prevent case mismatch bugs
         same_date_families = {
-            "FrischSchoggi Open Sales",
-            "Pralines & Truffes Open Sales",
-            "MiniMousses",
-            "FrischSchoggi Minis",
+            "frischschoggi open sales",
+            "pralines & truffes open sales",
+            "minimousses",
+            "frischschoggi minis",
         }
-        minus_5_families = {"FrischSchoggi Pre-packed"}
+        minus_5_families = {"frischschoggi pre-packed"}
         minus_7_families = {
-            "Branchli", "Carrés", "Figures", "Foiled Hearts",
-            "Mini Pralines", "Popcorn", "Pralines & Truffes Pre-Packed",
-            "Snacking", "Souvenir", "Tablets", "Tartufi",
+            "branchli", "carrés", "carres", "figures", "foiled hearts",
+            "mini pralines", "popcorn", "pralines & truffes pre-packed",
+            "snacking", "souvenir", "tablets", "tartufi", "hot chocolate",
         }
 
         processed_rows = []
@@ -177,13 +178,15 @@ if not st.session_state.processed:
           match = df_master[df_master["UK Item Code Clean"] == clean_num]
           item_in_master = not match.empty
 
+          raw_family = ""
           if item_in_master:
             item_name = match.iloc[0].get("Product Name", item.get("item_name"))
-            family = str(match.iloc[0].get("Family", "")).strip()
+            val = match.iloc[0].get("Family", "")
+            raw_family = str(val).strip() if pd.notna(val) else ""
           else:
             item_name = item.get("item_name")
-            family = None
 
+          family_lower = raw_family.lower()
           bb_str = str(item.get("best_before", "")).strip()
           removal_date_str = "Recheck"
           reason = None
@@ -192,16 +195,22 @@ if not st.session_state.processed:
             reason = "Item number not found in Product Master"
           elif bb_str == "UNCLEAR — RECHECK" or not bb_str:
             reason = "Best Before date is illegible or missing"
-          elif family not in same_date_families and family not in minus_5_families and family not in minus_7_families:
-            reason = f"Family '{family}' not in standard removal date calculation rules"
+          elif not raw_family or family_lower == "nan":
+            reason = "Family column is blank in Product Master"
+          elif (
+              family_lower not in same_date_families
+              and family_lower not in minus_5_families
+              and family_lower not in minus_7_families
+          ):
+            reason = f"Family '{raw_family}' not in standard removal date calculation rules"
           else:
             try:
               bb_date = datetime.strptime(bb_str, "%d.%m.%Y")
-              if family in same_date_families:
+              if family_lower in same_date_families:
                 removal_date_str = bb_date.strftime("%d.%m.%Y")
-              elif family in minus_5_families:
+              elif family_lower in minus_5_families:
                 removal_date_str = (bb_date - timedelta(days=5)).strftime("%d.%m.%Y")
-              elif family in minus_7_families:
+              elif family_lower in minus_7_families:
                 removal_date_str = (bb_date - timedelta(days=7)).strftime("%d.%m.%Y")
             except ValueError:
               reason = f"Best Before date format '{bb_str}' is invalid (expected DD.MM.YYYY)"
@@ -282,6 +291,8 @@ else:
     st.success("All items calculated successfully with zero rechecks!")
 
   st.markdown("---")
+  st.caption("⚠️ **Caution:** Automated system output. Please double-check critical removal dates, batches, and item totals against physical delivery stock.")
+
   if st.button("🔄 Process Another Slip (Wipe Session)"):
     for key in list(st.session_state.keys()):
       del st.session_state[key]
